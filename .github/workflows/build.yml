@@ -1,0 +1,168 @@
+name: Build TrollVNC
+
+on:
+  workflow_dispatch:
+    inputs:
+      is_managed:
+        type: boolean
+        description: Build with a bundled Managed.plist (managed configuration)
+        required: false
+        default: false
+      desktop_name:
+        type: string
+        description: Desktop name shown to clients
+        required: false
+        default: iPhone
+      port:
+        type: string
+        description: VNC TCP port (1024-65535; default 5901)
+        required: false
+        default: "5901"
+      view_only:
+        type: boolean
+        description: Global view-only (ignore input)
+        required: false
+        default: false
+      scale:
+        type: string
+        description: Output scale (0.1-1.0)
+        required: false
+        default: "1.0"
+      frame_rate_spec:
+        type: string
+        description: Frame rate spec (e.g. 60 | 30-60 | 30:60:120)
+        required: false
+        default: ""
+      modifier_map:
+        type: choice
+        description: Modifier mapping
+        required: false
+        default: std
+        options:
+          - std
+          - altcmd
+      reverse_mode:
+        type: choice
+        description: Reverse connection mode
+        required: false
+        default: none
+        options:
+          - none
+          - viewer
+          - repeater
+      reverse_socket:
+        type: string
+        description: Reverse host:port or [ipv6]:port
+        required: false
+        default: ""
+      reverse_repeater_id:
+        type: string
+        description: Repeater ID (numeric)
+        required: false
+        default: ""
+
+env:
+  FINALPACKAGE: 1
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # rootless = .deb for /var/jb; bootstrap = .tipa for TrollStore
+        scheme: ["rootless", "bootstrap"]
+
+    steps:
+      - name: Checkout OwnGoalStudio/TrollVNC (upstream GPL source)
+        uses: actions/checkout@v4
+        with:
+          repository: OwnGoalStudio/TrollVNC
+          path: src
+
+      - name: Install dependencies
+        run: |
+          brew install xcbeautify ldid-procursus p7zip make
+
+      - name: Checkout roothide/theos
+        uses: actions/checkout@v4
+        with:
+          repository: roothide/theos
+          path: theos-roothide
+          submodules: recursive
+
+      - name: Install iOS SDKs
+        working-directory: theos-roothide
+        run: |
+          export THEOS="$GITHUB_WORKSPACE/theos-roothide"
+          ./bin/install-sdk iPhoneOS16.5
+          ./bin/install-sdk iPhoneOS14.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Generate Managed.plist (managed build)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.is_managed == true }}
+        working-directory: src
+        env:
+          TVNC_DESKTOP_NAME: ${{ inputs.desktop_name }}
+          TVNC_PORT: ${{ inputs.port }}
+          TVNC_VIEW_ONLY: ${{ inputs.view_only }}
+          TVNC_SCALE: ${{ inputs.scale }}
+          TVNC_FRAME_RATE_SPEC: ${{ inputs.frame_rate_spec }}
+          TVNC_MODIFIER_MAP: ${{ inputs.modifier_map }}
+          TVNC_REVERSE_MODE: ${{ inputs.reverse_mode }}
+          TVNC_REVERSE_SOCKET: ${{ inputs.reverse_socket }}
+          TVNC_REVERSE_REPEATER_ID: ${{ inputs.reverse_repeater_id }}
+          TVNC_ENABLED: true
+          TVNC_CLIPBOARD_ENABLED: true
+          TVNC_SINGLE_NOTIF_ENABLED: true
+          TVNC_CLIENT_NOTIFS_ENABLED: true
+          TVNC_KEEPALIVE_SEC: 15
+          TVNC_ORIENTATION_SYNC: true
+          TVNC_NATURAL_SCROLL: false
+          TVNC_AUTO_ASSIST_ENABLED: false
+          TVNC_SERVER_CURSOR: false
+          TVNC_BONJOUR_ENABLED: false
+          TVNC_KEY_LOGGING: false
+          TVNC_FULL_PASSWORD: ${{ secrets.TVNC_FULL_PASSWORD }}
+          TVNC_VIEWONLY_PASSWORD: ${{ secrets.TVNC_VIEWONLY_PASSWORD }}
+        run: |
+          bash devkit/gen-managed-plist.sh
+
+      - name: Build package (${{ matrix.scheme }})
+        working-directory: src
+        run: |
+          # Point THEOS at the sibling checkout (workflow root)
+          export THEOS="$GITHUB_WORKSPACE/theos-roothide"
+          source devkit/${{ matrix.scheme }}.sh
+          # rootless.sh / bootstrap.sh set THEOS paths; re-assert after source
+          export THEOS="$GITHUB_WORKSPACE/theos-roothide"
+          FINALPACKAGE=1 gmake clean package
+
+      - name: Prepare artifacts
+        working-directory: src
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts/packages-${{ matrix.scheme }}"
+          if [ -d packages ]; then
+            if [ "${{ matrix.scheme }}" = "bootstrap" ]; then
+              cp -r packages/*.tipa "$GITHUB_WORKSPACE/artifacts/packages-${{ matrix.scheme }}/" || true
+            else
+              cp -r packages/*.deb "$GITHUB_WORKSPACE/artifacts/packages-${{ matrix.scheme }}/" || true
+            fi
+          fi
+          ls -la "$GITHUB_WORKSPACE/artifacts/packages-${{ matrix.scheme }}/" || true
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.scheme }}
+          path: artifacts/packages-${{ matrix.scheme }}
+          if-no-files-found: error
