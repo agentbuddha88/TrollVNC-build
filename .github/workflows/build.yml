@@ -61,6 +61,10 @@ on:
         required: false
         default: ""
 
+permissions:
+  contents: write
+  actions: read
+
 env:
   FINALPACKAGE: 1
   HOMEBREW_NO_AUTO_UPDATE: 1
@@ -140,10 +144,8 @@ jobs:
       - name: Build package (${{ matrix.scheme }})
         working-directory: src
         run: |
-          # Point THEOS at the sibling checkout (workflow root)
           export THEOS="$GITHUB_WORKSPACE/theos-roothide"
           source devkit/${{ matrix.scheme }}.sh
-          # rootless.sh / bootstrap.sh set THEOS paths; re-assert after source
           export THEOS="$GITHUB_WORKSPACE/theos-roothide"
           FINALPACKAGE=1 gmake clean package
 
@@ -166,3 +168,32 @@ jobs:
           name: packages-${{ matrix.scheme }}
           path: artifacts/packages-${{ matrix.scheme }}
           if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: release-packages
+          merge-multiple: true
+
+      - name: List packages
+        run: find release-packages -type f -print
+
+      - name: Publish GitHub Release (public downloadable free builds)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: free-build-${{ github.run_number }}
+          name: Free TrollVNC build #${{ github.run_number }}
+          body: |
+            Free GPLv2 self-build of [OwnGoalStudio/TrollVNC](https://github.com/OwnGoalStudio/TrollVNC).
+            - `*rootless*.deb` → install with Sileo/Filza on rootless jailbreak (`/var/jb`)
+            - `*.tipa` → install with TrollStore
+            Not a Havoc purchase. Built from upstream source via Actions.
+          files: release-packages/**/*
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
